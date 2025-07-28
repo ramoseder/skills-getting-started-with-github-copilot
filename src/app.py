@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
+from . import database
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -20,66 +21,10 @@ current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
 
-# In-memory activity database
-activities = {
-    "Chess Club": {
-        "description": "Learn strategies and compete in chess tournaments",
-        "schedule": "Fridays, 3:30 PM - 5:00 PM",
-        "max_participants": 12,
-        "participants": ["michael@mergington.edu", "daniel@mergington.edu"]
-    },
-    "Programming Class": {
-        "description": "Learn programming fundamentals and build software projects",
-        "schedule": "Tuesdays and Thursdays, 3:30 PM - 4:30 PM",
-        "max_participants": 20,
-        "participants": ["emma@mergington.edu", "sophia@mergington.edu"]
-    },
-    "Gym Class": {
-        "description": "Physical education and sports activities",
-        "schedule": "Mondays, Wednesdays, Fridays, 2:00 PM - 3:00 PM",
-        "max_participants": 30,
-        "participants": ["john@mergington.edu", "olivia@mergington.edu"]
-    },
-    # Sports related activities
-    "Soccer Team": {
-        "description": "Join the school soccer team and compete in local leagues",
-        "schedule": "Tuesdays and Thursdays, 4:00 PM - 5:30 PM",
-        "max_participants": 18,
-        "participants": ["lucas@mergington.edu", "mia@mergington.edu"]
-    },
-    "Basketball Club": {
-        "description": "Practice basketball skills and play friendly matches",
-        "schedule": "Wednesdays, 3:30 PM - 5:00 PM",
-        "max_participants": 15,
-        "participants": ["liam@mergington.edu", "ava@mergington.edu"]
-    },
-    # Artistic activities
-    "Drama Club": {
-        "description": "Participate in school plays and acting workshops",
-        "schedule": "Mondays, 4:00 PM - 5:30 PM",
-        "max_participants": 20,
-        "participants": ["noah@mergington.edu", "isabella@mergington.edu"]
-    },
-    "Art Workshop": {
-        "description": "Explore painting, drawing, and sculpture techniques",
-        "schedule": "Thursdays, 3:30 PM - 5:00 PM",
-        "max_participants": 16,
-        "participants": ["amelia@mergington.edu", "benjamin@mergington.edu"]
-    },
-    # Intellectual activities
-    "Math Olympiad": {
-        "description": "Prepare for math competitions and solve challenging problems",
-        "schedule": "Fridays, 2:00 PM - 3:30 PM",
-        "max_participants": 10,
-        "participants": ["charlotte@mergington.edu", "jackson@mergington.edu"]
-    },
-    "Science Club": {
-        "description": "Conduct experiments and explore scientific concepts",
-        "schedule": "Wednesdays, 4:00 PM - 5:00 PM",
-        "max_participants": 14,
-        "participants": ["harper@mergington.edu", "logan@mergington.edu"]
-    }
-}
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the database on startup."""
+    database.init_db()
 
 
 @app.get("/")
@@ -89,25 +34,61 @@ def root():
 
 @app.get("/activities")
 def get_activities():
+    """Get all activities with their participants."""
+    conn = database.get_db()
+    cursor = conn.cursor()
+    
+    # Get all activities with their participants
+    activities = {}
+    cursor.execute('''
+        SELECT a.*, GROUP_CONCAT(p.email) as participant_emails
+        FROM activities a
+        LEFT JOIN participants p ON a.name = p.activity_name
+        GROUP BY a.name
+    ''')
+    
+    for row in cursor.fetchall():
+        activities[row['name']] = {
+            'description': row['description'],
+            'schedule': row['schedule'],
+            'max_participants': row['max_participants'],
+            'participants': row['participant_emails'].split(',') if row['participant_emails'] else []
+        }
+    
+    conn.close()
     return activities
 
 
 @app.post("/activities/{activity_name}/signup")
 def signup_for_activity(activity_name: str, email: str):
     """Sign up a student for an activity"""
+    conn = database.get_db()
+    cursor = conn.cursor()
+
     # Validate activity exists
-    if activity_name not in activities:
+    cursor.execute('SELECT * FROM activities WHERE name = ?', (activity_name,))
+    activity = cursor.fetchone()
+    if not activity:
         raise HTTPException(status_code=404, detail="Activity not found")
-
-    # Get the specific activity
-    activity = activities[activity_name]
-
+    
     # Validate student is not already signed up
-    if email in activity["participants"]:
+    cursor.execute('SELECT * FROM participants WHERE activity_name = ? AND email = ?',
+                  (activity_name, email))
+    if cursor.fetchone():
         raise HTTPException(status_code=400, detail="Already signed up for this activity")
-
+    
+    # Check if activity is full
+    cursor.execute('SELECT COUNT(*) as count FROM participants WHERE activity_name = ?',
+                  (activity_name,))
+    current_participants = cursor.fetchone()['count']
+    if current_participants >= activity['max_participants']:
+        raise HTTPException(status_code=400, detail="Activity is full")
+    
     # Add student
-    activity["participants"].append(email)
+    cursor.execute('INSERT INTO participants (email, activity_name) VALUES (?, ?)',
+                  (email, activity_name))
+    conn.commit()
+    conn.close()
     return {"message": f"Signed up {email} for {activity_name}"}
 
 
@@ -115,10 +96,23 @@ def signup_for_activity(activity_name: str, email: str):
 @app.post("/activities/{activity_name}/unregister")
 def unregister_from_activity(activity_name: str, email: str):
     """Unregister a student from an activity"""
-    if activity_name not in activities:
+    conn = database.get_db()
+    cursor = conn.cursor()
+
+    # Validate activity exists
+    cursor.execute('SELECT * FROM activities WHERE name = ?', (activity_name,))
+    if not cursor.fetchone():
         raise HTTPException(status_code=404, detail="Activity not found")
-    activity = activities[activity_name]
-    if email not in activity["participants"]:
+
+    # Check if student is registered
+    cursor.execute('SELECT * FROM participants WHERE activity_name = ? AND email = ?',
+                  (activity_name, email))
+    if not cursor.fetchone():
         raise HTTPException(status_code=400, detail="Student not registered for this activity")
-    activity["participants"].remove(email)
+
+    # Remove student
+    cursor.execute('DELETE FROM participants WHERE activity_name = ? AND email = ?',
+                  (activity_name, email))
+    conn.commit()
+    conn.close()
     return {"message": f"Removed {email} from {activity_name}"}

@@ -10,8 +10,16 @@ document.addEventListener("DOMContentLoaded", () => {
       const response = await fetch("/activities");
       const activities = await response.json();
 
-      // Clear loading message
+      // Clear both activity list and dropdown
       activitiesList.innerHTML = "";
+      // Clear dropdown completely and add default option
+      while (activitySelect.firstChild) {
+        activitySelect.removeChild(activitySelect.firstChild);
+      }
+      const defaultOption = document.createElement("option");
+      defaultOption.value = "";
+      defaultOption.textContent = "-- Select an activity --";
+      activitySelect.appendChild(defaultOption);
 
       // Populate activities list
       Object.entries(activities).forEach(([name, details]) => {
