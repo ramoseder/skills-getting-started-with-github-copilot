@@ -10,8 +10,16 @@ document.addEventListener("DOMContentLoaded", () => {
       const response = await fetch("/activities");
       const activities = await response.json();
 
-      // Clear loading message
+      // Clear both activity list and dropdown
       activitiesList.innerHTML = "";
+      // Clear dropdown completely and add default option
+      while (activitySelect.firstChild) {
+        activitySelect.removeChild(activitySelect.firstChild);
+      }
+      const defaultOption = document.createElement("option");
+      defaultOption.value = "";
+      defaultOption.textContent = "-- Select an activity --";
+      activitySelect.appendChild(defaultOption);
 
       // Populate activities list
       Object.entries(activities).forEach(([name, details]) => {
@@ -20,11 +28,38 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const spotsLeft = details.max_participants - details.participants.length;
 
+        // Create participants list HTML with delete icon and no bullets
+        let participantsHTML = "";
+        if (details.participants.length > 0) {
+          participantsHTML = `
+            <div class="participants-section">
+              <strong>Participants:</strong>
+              <ul class="participants-list">
+                ${details.participants
+                  .map(
+                    (email) =>
+                      `<li class="participant-item"><span class="participant-badge">${email
+                        .split("@")[0]
+                        .replace(/[^a-zA-Z0-9]/g, "")}</span> <span class="participant-email">${email}</span><button class="delete-participant" title="Remove" data-activity="${encodeURIComponent(
+                        name
+                      )}" data-email="${encodeURIComponent(
+                        email
+                      )}"><span aria-label="Delete" class="delete-icon">&#128465;</span></button></li>`
+                  )
+                  .join("")}
+              </ul>
+            </div>
+          `;
+        } else {
+          participantsHTML = `<div class="participants-section"><em>No participants yet.</em></div>`;
+        }
+
         activityCard.innerHTML = `
           <h4>${name}</h4>
           <p>${details.description}</p>
           <p><strong>Schedule:</strong> ${details.schedule}</p>
           <p><strong>Availability:</strong> ${spotsLeft} spots left</p>
+          ${participantsHTML}
         `;
 
         activitiesList.appendChild(activityCard);
@@ -34,6 +69,30 @@ document.addEventListener("DOMContentLoaded", () => {
         option.value = name;
         option.textContent = name;
         activitySelect.appendChild(option);
+      });
+
+      // Add event listeners for delete buttons
+      document.querySelectorAll(".delete-participant").forEach((btn) => {
+        btn.addEventListener("click", async (e) => {
+          e.preventDefault();
+          const activity = decodeURIComponent(btn.getAttribute("data-activity"));
+          const email = decodeURIComponent(btn.getAttribute("data-email"));
+          if (!confirm(`Remove ${email} from ${activity}?`)) return;
+          try {
+            const response = await fetch(
+              `/activities/${encodeURIComponent(activity)}/unregister?email=${encodeURIComponent(email)}`,
+              { method: "POST" }
+            );
+            if (response.ok) {
+              fetchActivities();
+            } else {
+              const result = await response.json();
+              alert(result.detail || "Failed to remove participant.");
+            }
+          } catch (err) {
+            alert("Failed to remove participant.");
+          }
+        });
       });
     } catch (error) {
       activitiesList.innerHTML = "<p>Failed to load activities. Please try again later.</p>";
@@ -62,6 +121,8 @@ document.addEventListener("DOMContentLoaded", () => {
         messageDiv.textContent = result.message;
         messageDiv.className = "success";
         signupForm.reset();
+        // Refresh activities list so UI updates immediately
+        fetchActivities();
       } else {
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";
